@@ -7,7 +7,9 @@
 let publisherState = {
   isPublishing: false,
   isPaused: false,
+  isProcessing: false, // Lock to prevent concurrent processQueue calls
   currentSession: null,
+  config: null,
   queue: [],
   completed: 0,
   failed: 0,
@@ -170,6 +172,41 @@ async function uploadFile(config, path, content, message, existingSha = null) {
   
   if (!response.ok) {
     const error = await response.json();
+    
+    // Handle SHA mismatch error - file exists but we didn't provide SHA
+    if (response.status === 422 && error.message?.includes('sha')) {
+      console.log(`File exists, fetching SHA for: ${path}`);
+      const existing = await fileExists(config, path);
+      if (existing.exists && existing.sha) {
+        // Retry with the SHA
+        body.sha = existing.sha;
+        const retryResponse = await fetch(
+          `${GITHUB_API}/repos/${owner}/${repo}/contents/${path}`,
+          {
+            method: 'PUT',
+            headers: {
+              'Authorization': `token ${config.token}`,
+              'Accept': 'application/vnd.github.v3+json',
+              'Content-Type': 'application/json'
+            },
+            body: JSON.stringify(body)
+          }
+        );
+        
+        if (retryResponse.ok) {
+          const retryData = await retryResponse.json();
+          return {
+            url: retryData.content.download_url,
+            sha: retryData.content.sha,
+            path: retryData.content.path
+          };
+        }
+        
+        const retryError = await retryResponse.json();
+        throw new Error(retryError.message || `Upload retry failed: ${retryResponse.status}`);
+      }
+    }
+    
     throw new Error(error.message || `Upload failed: ${response.status}`);
   }
   
@@ -231,7 +268,8 @@ function blobToBase64(blob) {
  * Start publishing a session
  */
 async function startPublish(sessionId, config, callbacks = {}) {
-  if (publisherState.isPublishing) {
+  // Check for existing publish operation (including processing state)
+  if (publisherState.isPublishing || publisherState.isProcessing) {
     throw new Error('Already publishing');
   }
   
@@ -252,10 +290,11 @@ async function startPublish(sessionId, config, callbacks = {}) {
     throw new Error('No captures to publish');
   }
   
-  // Initialize publish state
+  // Initialize publish state (reset all fields to prevent stale data)
   publisherState = {
     isPublishing: true,
     isPaused: false,
+    isProcessing: false,
     currentSession: session,
     config,
     queue: [...captures],
@@ -282,7 +321,7 @@ async function startPublish(sessionId, config, callbacks = {}) {
   session.status = 'publishing';
   await Storage.updateSession(session);
   
-  // Start processing queue
+  // Start processing queue (don't await - runs in background)
   processQueue();
   
   return { total: captures.length };
@@ -290,58 +329,84 @@ async function startPublish(sessionId, config, callbacks = {}) {
 
 /**
  * Process the upload queue
+ * Uses a lock to prevent concurrent processing
  */
 async function processQueue() {
-  while (publisherState.queue.length > 0 && publisherState.isPublishing && !publisherState.isPaused) {
-    // Check if online
-    if (!navigator.onLine) {
-      reportProgress('Waiting for network...');
-      await waitForOnline();
-    }
-    
-    const capture = publisherState.queue[0];
-    
-    try {
-      reportProgress(`Uploading image ${capture.sequenceNum}...`);
-      
-      const result = await uploadWithRetry(capture);
-      
-      // Mark as published
-      await Storage.markCapturePublished(capture.id, result.url);
-      
-      // Update state
-      publisherState.completed++;
-      publisherState.queue.shift();
-      
-      // Save progress
-      await Storage.savePublishState({
-        sessionId: publisherState.currentSession.id,
-        publishStarted: new Date(publisherState.startTime).toISOString(),
-        totalToUpload: publisherState.total,
-        completed: publisherState.completed,
-        failed: publisherState.failed,
-        inProgress: true
-      });
-      
-      reportProgress();
-      
-      // Small delay to avoid rate limiting
-      await delay(500);
-      
-    } catch (error) {
-      console.error('Upload failed:', error);
-      publisherState.failed++;
-      publisherState.queue.shift(); // Move to next
-      
-      if (publisherState.onError) {
-        publisherState.onError(error, capture);
-      }
-    }
+  // Prevent concurrent processing (race condition fix)
+  if (publisherState.isProcessing) {
+    console.log('processQueue already running, skipping');
+    return;
   }
   
-  // Check if complete
-  if (publisherState.queue.length === 0 && publisherState.isPublishing) {
-    await finishPublish();
+  publisherState.isProcessing = true;
+  
+  try {
+    while (publisherState.queue.length > 0 && publisherState.isPublishing && !publisherState.isPaused) {
+      // Check if online
+      if (!navigator.onLine) {
+        reportProgress('Waiting for network...');
+        await waitForOnline();
+        
+        // Re-check state after waiting (could have been cancelled)
+        if (!publisherState.isPublishing) break;
+      }
+      
+      const capture = publisherState.queue[0];
+      
+      // Snapshot current state to detect changes
+      const currentSessionId = publisherState.currentSession?.id;
+      
+      try {
+        reportProgress(`Uploading image ${capture.sequenceNum}...`);
+        
+        const result = await uploadWithRetry(capture);
+        
+        // Verify we're still publishing the same session (race condition check)
+        if (publisherState.currentSession?.id !== currentSessionId) {
+          console.warn('Session changed during upload, aborting');
+          break;
+        }
+        
+        // Mark as published
+        await Storage.markCapturePublished(capture.id, result.url);
+        
+        // Update state atomically
+        publisherState.completed++;
+        publisherState.queue.shift();
+        
+        // Save progress
+        await Storage.savePublishState({
+          sessionId: publisherState.currentSession.id,
+          publishStarted: new Date(publisherState.startTime).toISOString(),
+          totalToUpload: publisherState.total,
+          completed: publisherState.completed,
+          failed: publisherState.failed,
+          inProgress: true
+        });
+        
+        reportProgress();
+        
+        // Small delay to avoid rate limiting
+        await delay(500);
+        
+      } catch (error) {
+        console.error('Upload failed:', error);
+        publisherState.failed++;
+        publisherState.queue.shift(); // Move to next
+        
+        if (publisherState.onError) {
+          publisherState.onError(error, capture);
+        }
+      }
+    }
+    
+    // Check if complete
+    if (publisherState.queue.length === 0 && publisherState.isPublishing) {
+      await finishPublish();
+    }
+  } finally {
+    // Always release the lock
+    publisherState.isProcessing = false;
   }
 }
 
@@ -400,11 +465,14 @@ async function finishPublish() {
     
     // Generate CSV
     const csv = generateCSV(captures);
+    const csvPath = `sessions/${session.id}/data.csv`;
+    const existingCsv = await fileExists(config, csvPath);
     await uploadFile(
       config,
-      `sessions/${session.id}/data.csv`,
+      csvPath,
       csv,
-      `Upload data.csv for session ${session.id}`
+      `Upload data.csv for session ${session.id}`,
+      existingCsv.exists ? existingCsv.sha : null
     );
     
     // Generate metadata
@@ -421,11 +489,14 @@ async function finishPublish() {
       contributor: config.contributor || 'anonymous'
     };
     
+    const metadataPath = `sessions/${session.id}/metadata.json`;
+    const existingMetadata = await fileExists(config, metadataPath);
     await uploadFile(
       config,
-      `sessions/${session.id}/metadata.json`,
+      metadataPath,
       JSON.stringify(metadata, null, 2),
-      `Upload metadata for session ${session.id}`
+      `Upload metadata for session ${session.id}`,
+      existingMetadata.exists ? existingMetadata.sha : null
     );
     
     // Update coverage index
@@ -458,6 +529,10 @@ async function finishPublish() {
     
   } catch (error) {
     console.error('Failed to finish publish:', error);
+    
+    // Always reset publishing state on error to prevent stuck state
+    publisherState.isPublishing = false;
+    
     if (publisherState.onError) {
       publisherState.onError(error);
     }
@@ -476,9 +551,12 @@ function pausePublish() {
  * Resume publishing
  */
 function resumePublish() {
-  if (publisherState.isPaused) {
+  if (publisherState.isPaused && publisherState.isPublishing) {
     publisherState.isPaused = false;
-    processQueue();
+    // Only start processQueue if not already processing
+    if (!publisherState.isProcessing) {
+      processQueue();
+    }
   }
 }
 
@@ -486,17 +564,31 @@ function resumePublish() {
  * Cancel publishing
  */
 async function cancelPublish() {
+  const sessionId = publisherState.currentSession?.id;
+  
+  // Signal to stop processing
   publisherState.isPublishing = false;
   publisherState.isPaused = false;
   publisherState.queue = [];
   
-  if (publisherState.currentSession) {
-    const session = await Storage.getSession(publisherState.currentSession.id);
+  // Wait for any in-progress processing to complete
+  let waitCount = 0;
+  while (publisherState.isProcessing && waitCount < 50) {
+    await delay(100);
+    waitCount++;
+  }
+  
+  if (sessionId) {
+    const session = await Storage.getSession(sessionId);
     if (session) {
       session.status = 'stopped';
       await Storage.updateSession(session);
     }
   }
+  
+  // Reset state
+  publisherState.currentSession = null;
+  publisherState.config = null;
 }
 
 /**

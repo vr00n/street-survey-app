@@ -280,12 +280,13 @@ async function deleteAllSessions() {
 
 /**
  * Save a capture
+ * Note: We keep the imageBlob in IndexedDB - do NOT null it out
  */
 async function saveCapture(capture) {
   return new Promise((resolve, reject) => {
     const transaction = db.transaction(['captures', 'sessions'], 'readwrite');
     
-    // Save capture
+    // Save capture (blob is stored in IndexedDB)
     const capturesStore = transaction.objectStore('captures');
     const captureRequest = capturesStore.add(capture);
     

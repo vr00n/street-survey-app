@@ -743,11 +743,17 @@ async function exportSessionAsZip(sessionId, onProgress = null) {
   // Add images folder
   const imagesFolder = zip.folder('images');
   let processed = 0;
+  let imagesAdded = 0;
   
   for (const capture of captures) {
     const filename = `${capture.sequenceNum.toString().padStart(6, '0')}.jpg`;
-    if (capture.imageBlob) {
+    
+    // Check if imageBlob exists and is valid
+    if (capture.imageBlob && capture.imageBlob instanceof Blob && capture.imageBlob.size > 0) {
       imagesFolder.file(filename, capture.imageBlob);
+      imagesAdded++;
+    } else {
+      console.warn(`Capture ${capture.sequenceNum} has no valid image blob`);
     }
     
     processed++;
@@ -761,6 +767,10 @@ async function exportSessionAsZip(sessionId, onProgress = null) {
     }
   }
   
+  if (imagesAdded === 0) {
+    throw new Error('No images found in session. Images may have been cleared from storage.');
+  }
+  
   // Generate CSV
   const csv = generateCSV(captures);
   zip.file('data.csv', csv);
@@ -771,6 +781,7 @@ async function exportSessionAsZip(sessionId, onProgress = null) {
     name: session.name,
     createdAt: session.createdAt,
     captureCount: captures.length,
+    imagesExported: imagesAdded,
     exportedAt: new Date().toISOString(),
     settings: session.settings
   };
@@ -806,7 +817,7 @@ async function exportSessionAsZip(sessionId, onProgress = null) {
   return {
     filename: `${session.name || session.id}.zip`,
     size: blob.size,
-    captureCount: captures.length
+    captureCount: imagesAdded
   };
 }
 

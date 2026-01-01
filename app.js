@@ -32,10 +32,10 @@ const AppState = {
     imageQuality: 0.7,
     imageMaxWidth: 1280,
     githubToken: '',
-    githubRepo: '',
+    githubRepo: 'vr00n/street-survey-app',
     githubBranch: 'main',
-    mapboxToken: '',
-    contributor: '',
+    mapboxToken: 'pk.eyJ1IjoidnIwMG4tbnljc2J1cyIsImEiOiJjbDB5cHhoeHgxcmEyM2ptdXVkczk1M2xlIn0.qq6o-6TMurwke-t1eyetBw',
+    contributor: 'vr00n',
     githubLimit: 1000
   },
   
@@ -686,6 +686,9 @@ async function captureFrame() {
     
     // Save to IndexedDB
     await Storage.saveCapture(capture);
+    
+    // Release the in-memory reference but blob is preserved in IndexedDB
+    capture.imageBlob = null;
     
     // Update mini map
     if (gpsReading.available) {

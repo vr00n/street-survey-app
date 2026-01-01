@@ -4,6 +4,17 @@
  */
 
 // ============================================
+// Configuration (loaded from settings)
+// ============================================
+const CONFIG = {
+  GITHUB_TOKEN: '',
+  GITHUB_REPO: '',
+  GITHUB_BRANCH: 'main',
+  MAPBOX_TOKEN: '',
+  CONTRIBUTOR: ''
+};
+
+// ============================================
 // Application State
 // ============================================
 
@@ -25,17 +36,13 @@ const AppState = {
   // Camera
   cameraStream: null,
   videoElement: null,
+  canvasElement: null,
   
   // Settings
   settings: {
     captureInterval: 2000,
     imageQuality: 0.7,
     imageMaxWidth: 1280,
-    githubToken: '',
-    githubRepo: 'vr00n/street-survey-app',
-    githubBranch: 'main',
-    mapboxToken: 'pk.eyJ1IjoidnIwMG4tbnljc2J1cyIsImEiOiJjbDB5cHhoeHgxcmEyM2ptdXVkczk1M2xlIn0.qq6o-6TMurwke-t1eyetBw',
-    contributor: 'vr00n',
     githubLimit: 1000
   },
   
@@ -89,40 +96,76 @@ document.addEventListener('DOMContentLoaded', async () => {
 async function loadSettings() {
   const savedSettings = await Storage.getAllSettings();
   
-  Object.keys(savedSettings).forEach(key => {
-    if (key in AppState.settings) {
-      AppState.settings[key] = savedSettings[key];
-    }
-  });
+  // Load saved capture settings
+  if (savedSettings.captureInterval) {
+    AppState.settings.captureInterval = savedSettings.captureInterval;
+  }
+  if (savedSettings.imageQuality) {
+    AppState.settings.imageQuality = savedSettings.imageQuality;
+  }
+  if (savedSettings.imageMaxWidth) {
+    AppState.settings.imageMaxWidth = savedSettings.imageMaxWidth;
+  }
+  if (savedSettings.githubLimit) {
+    AppState.settings.githubLimit = savedSettings.githubLimit;
+  }
+  
+  // Load API tokens
+  if (savedSettings.githubToken) {
+    CONFIG.GITHUB_TOKEN = savedSettings.githubToken;
+  }
+  if (savedSettings.githubRepo) {
+    CONFIG.GITHUB_REPO = savedSettings.githubRepo;
+  }
+  if (savedSettings.githubBranch) {
+    CONFIG.GITHUB_BRANCH = savedSettings.githubBranch;
+  }
+  if (savedSettings.mapboxToken) {
+    CONFIG.MAPBOX_TOKEN = savedSettings.mapboxToken;
+  }
+  if (savedSettings.contributor) {
+    CONFIG.CONTRIBUTOR = savedSettings.contributor;
+  }
   
   // Populate settings form
-  document.getElementById('github-token').value = AppState.settings.githubToken || '';
-  document.getElementById('github-repo').value = AppState.settings.githubRepo || '';
-  document.getElementById('github-branch').value = AppState.settings.githubBranch || 'main';
-  document.getElementById('contributor-name').value = AppState.settings.contributor || '';
-  document.getElementById('mapbox-token').value = AppState.settings.mapboxToken || '';
   document.getElementById('capture-interval').value = AppState.settings.captureInterval;
   document.getElementById('image-quality').value = AppState.settings.imageQuality;
   document.getElementById('image-resolution').value = AppState.settings.imageMaxWidth;
   document.getElementById('github-limit').value = AppState.settings.githubLimit;
+  
+  // Populate API tokens
+  document.getElementById('github-token').value = CONFIG.GITHUB_TOKEN;
+  document.getElementById('github-repo').value = CONFIG.GITHUB_REPO;
+  document.getElementById('github-branch').value = CONFIG.GITHUB_BRANCH;
+  document.getElementById('mapbox-token').value = CONFIG.MAPBOX_TOKEN;
+  document.getElementById('contributor').value = CONFIG.CONTRIBUTOR;
 }
 
 async function saveSettings() {
-  // Read from form
-  AppState.settings.githubToken = document.getElementById('github-token').value.trim();
-  AppState.settings.githubRepo = document.getElementById('github-repo').value.trim();
-  AppState.settings.githubBranch = document.getElementById('github-branch').value.trim() || 'main';
-  AppState.settings.contributor = document.getElementById('contributor-name').value.trim();
-  AppState.settings.mapboxToken = document.getElementById('mapbox-token').value.trim();
+  // Read capture settings from form
   AppState.settings.captureInterval = parseInt(document.getElementById('capture-interval').value);
   AppState.settings.imageQuality = parseFloat(document.getElementById('image-quality').value);
   AppState.settings.imageMaxWidth = parseInt(document.getElementById('image-resolution').value);
   AppState.settings.githubLimit = parseInt(document.getElementById('github-limit').value);
   
-  // Save to IndexedDB
+  // Read API tokens from form
+  CONFIG.GITHUB_TOKEN = document.getElementById('github-token').value.trim();
+  CONFIG.GITHUB_REPO = document.getElementById('github-repo').value.trim();
+  CONFIG.GITHUB_BRANCH = document.getElementById('github-branch').value.trim() || 'main';
+  CONFIG.MAPBOX_TOKEN = document.getElementById('mapbox-token').value.trim();
+  CONFIG.CONTRIBUTOR = document.getElementById('contributor').value.trim();
+  
+  // Save capture settings to IndexedDB
   for (const [key, value] of Object.entries(AppState.settings)) {
     await Storage.saveSetting(key, value);
   }
+  
+  // Save API tokens to IndexedDB
+  await Storage.saveSetting('githubToken', CONFIG.GITHUB_TOKEN);
+  await Storage.saveSetting('githubRepo', CONFIG.GITHUB_REPO);
+  await Storage.saveSetting('githubBranch', CONFIG.GITHUB_BRANCH);
+  await Storage.saveSetting('mapboxToken', CONFIG.MAPBOX_TOKEN);
+  await Storage.saveSetting('contributor', CONFIG.CONTRIBUTOR);
   
   showToast('Settings saved', 'success');
   hidePanel('settings-panel');
@@ -134,6 +177,9 @@ async function saveSettings() {
 
 async function initCamera() {
   AppState.videoElement = document.getElementById('camera-preview');
+  
+  // Create a canvas element for capturing frames
+  AppState.canvasElement = document.createElement('canvas');
   
   try {
     // Request camera with rear-facing preference
@@ -149,7 +195,15 @@ async function initCamera() {
     AppState.cameraStream = await navigator.mediaDevices.getUserMedia(constraints);
     AppState.videoElement.srcObject = AppState.cameraStream;
     
-    console.log('Camera initialized');
+    // Wait for video to be ready
+    await new Promise((resolve) => {
+      AppState.videoElement.onloadedmetadata = () => {
+        AppState.videoElement.play();
+        resolve();
+      };
+    });
+    
+    console.log('Camera initialized:', AppState.videoElement.videoWidth, 'x', AppState.videoElement.videoHeight);
     
   } catch (error) {
     console.error('Failed to access camera:', error);
@@ -165,26 +219,35 @@ async function captureImage() {
   
   const video = AppState.videoElement;
   
-  // Create canvas for capture
-  const canvas = document.createElement('canvas');
+  // Make sure video has dimensions
+  if (video.videoWidth === 0 || video.videoHeight === 0) {
+    console.warn('Video not ready yet');
+    return null;
+  }
+  
+  // Use the persistent canvas
+  const canvas = AppState.canvasElement;
   canvas.width = video.videoWidth;
   canvas.height = video.videoHeight;
   
   const ctx = canvas.getContext('2d');
-  ctx.drawImage(video, 0, 0);
+  ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
   
   // Convert to blob
   return new Promise((resolve) => {
     canvas.toBlob(async (blob) => {
-      if (!blob) {
+      if (!blob || blob.size === 0) {
+        console.warn('Failed to create blob from canvas');
         resolve(null);
         return;
       }
       
+      console.log('Captured image:', blob.size, 'bytes');
+      
       // Compress image
       const compressed = await compressImage(blob);
       resolve(compressed);
-    }, 'image/jpeg', 0.95);
+    }, 'image/jpeg', 0.92);
   });
 }
 
@@ -202,30 +265,25 @@ async function compressImage(blob) {
     const width = Math.round(img.width * scale);
     const height = Math.round(img.height * scale);
     
-    const canvas = new OffscreenCanvas(width, height);
+    const canvas = document.createElement('canvas');
+    canvas.width = width;
+    canvas.height = height;
     const ctx = canvas.getContext('2d');
     ctx.drawImage(img, 0, 0, width, height);
     
-    const compressed = await canvas.convertToBlob({ type: 'image/jpeg', quality });
-    
-    // Validate compressed image
-    if (compressed.size < 1000) {
-      console.warn('Compressed image too small, using original');
-      return blob;
-    }
-    
-    // Verify decodable
-    try {
-      await createImageBitmap(compressed);
-    } catch (e) {
-      console.error('Compressed image corrupted, using original');
-      return blob;
-    }
-    
-    // Release memory
-    img.close();
-    
-    return compressed;
+    return new Promise((resolve) => {
+      canvas.toBlob((compressed) => {
+        if (!compressed || compressed.size < 1000) {
+          console.warn('Compressed image too small, using original');
+          resolve(blob);
+          return;
+        }
+        
+        console.log('Compressed:', blob.size, '->', compressed.size);
+        img.close();
+        resolve(compressed);
+      }, 'image/jpeg', quality);
+    });
     
   } catch (error) {
     console.error('Compression failed:', error);
@@ -433,7 +491,7 @@ class WakeLockManager {
       this.fallbackVideo.setAttribute('playsinline', '');
       this.fallbackVideo.setAttribute('muted', '');
       this.fallbackVideo.muted = true;
-      this.fallbackVideo.style.cssText = 'position:fixed;top:-1px;left:-1px;width:1px;height:1px;opacity:0;';
+      this.fallbackVideo.style.cssText = 'position:fixed;top:-1px;left:-1px;width:1px;height:1px;opacity:0;pointer-events:none;';
       
       // Tiny silent video data URI
       this.fallbackVideo.src = 'data:video/mp4;base64,AAAAIGZ0eXBtcDQyAAACAGlzb21pc28yYXZjMW1wNDEAAAAIZnJlZQAAA0NtZGF0AAACrQYF//+p3EXpvebZSLeWLNgg2SPu73gyNjQgLSBjb3JlIDE1NyByMjk4MCBkMGEyZTU1IC0gSC4yNjQvTVBFRy00IEFWQyBjb2RlYyAtIENvcHlsZWZ0IDIwMDMtMjAxOCAtIGh0dHA6Ly93d3cudmlkZW9sYW4ub3JnL3gyNjQuaHRtbCAtIG9wdGlvbnM6IGNhYmFjPTEgcmVmPTMgZGVibG9jaz0xOjA6MCBhbmFseXNlPTB4MzoweDExMyBtZT1oZXggc3VibWU9NyBwc3k9MSBwc3lfcmQ9MS4wMDowLjAwIG1peGVkX3JlZj0xIG1lX3JhbmdlPTE2IGNocm9tYV9tZT0xIHRyZWxsaXM9MSA4eDhkY3Q9MSBjcW09MCBkZWFkem9uZT0yMSwxMSBmYXN0X3Bza2lwPTEgY2hyb21hX3FwX29mZnNldD0tMiB0aHJlYWRzPTYgbG9va2FoZWFkX3RocmVhZHM9MSBzbGljZWRfdGhyZWFkcz0wIG5yPTAgZGVjaW1hdGU9MSBpbnRlcmxhY2VkPTAgYmx1cmF5X2NvbXBhdD0wIGNvbnN0cmFpbmVkX2ludHJhPTAgYmZyYW1lcz0zIGJfcHlyYW1pZD0yIGJfYWRhcHQ9MSBiX2JpYXM9MCBkaXJlY3Q9MSB3ZWlnaHRiPTEgb3Blbl9nb3A9MCB3ZWlnaHRwPTIga2V5aW50PTI1MCBrZXlpbnRfbWluPTI1IHNjZW5lY3V0PTQwIGludHJhX3JlZnJlc2g9MCByY19sb29rYWhlYWQ9NDAgcmM9Y3JmIG1idHJlZT0xIGNyZj0yMy4wIHFjb21wPTAuNjAgcXBtaW49MCBxcG1heD02OSBxcHN0ZXA9NCBpcF9yYXRpbz0xLjQwIGFxPTE6MS4wMACAAAABIGWIhAAz//727L4FNf2f0JcRLMXaSnA+KqSAgHc0wAAAAwAAAwAAFgn0IAAABANAAAE1gAAAAwAAU7trAR4AAADLAAAR4QAAABcABECjAYVUDGwaA94AAAADAAAABgAAAAoAERAkk6AAAAMAAAADgAAAABEABECjAYVUDGwaA94AAAADAAAABgAAAAoAERAkk6A=';
@@ -479,6 +537,13 @@ async function startRecording(sessionName = null) {
   if (AppState.isRecording) return;
   
   try {
+    // Make sure camera is ready
+    if (!AppState.videoElement || AppState.videoElement.videoWidth === 0) {
+      await initCamera();
+      // Wait a bit for camera to stabilize
+      await new Promise(r => setTimeout(r, 500));
+    }
+    
     // Create session
     AppState.currentSession = await Storage.createSession(sessionName, {
       captureInterval: AppState.settings.captureInterval,
@@ -513,9 +578,14 @@ async function startRecording(sessionName = null) {
     document.addEventListener('visibilitychange', handleVisibilityChange);
     
     // Start mini map
-    if (AppState.settings.mapboxToken) {
-      await CoverageMap.initMiniMap('mini-map', AppState.settings.mapboxToken);
-      CoverageMap.startLiveTrack();
+    if (CONFIG.MAPBOX_TOKEN) {
+      try {
+        await CoverageMap.initMiniMap('mini-map', CONFIG.MAPBOX_TOKEN);
+        CoverageMap.startLiveTrack();
+        document.getElementById('mini-map-container').style.display = 'block';
+      } catch (e) {
+        console.warn('Mini map failed:', e);
+      }
     }
     
     // Start capture interval
@@ -526,7 +596,7 @@ async function startRecording(sessionName = null) {
     
     // Update UI
     updateRecordingUI();
-    updateCapacityBar();
+    document.getElementById('capacity-bar').classList.add('visible');
     
     showToast('Recording started', 'success');
     
@@ -615,6 +685,7 @@ async function stopRecording() {
   
   // Stop mini map tracking
   CoverageMap.stopLiveTrack();
+  document.getElementById('mini-map-container').style.display = 'none';
   
   // Remove visibility handler
   document.removeEventListener('visibilitychange', handleVisibilityChange);
@@ -650,7 +721,7 @@ async function captureFrame() {
     // Get image
     const imageBlob = await captureImage();
     if (!imageBlob) {
-      console.warn('Failed to capture image');
+      console.warn('Failed to capture image, skipping frame');
       return;
     }
     
@@ -687,8 +758,7 @@ async function captureFrame() {
     // Save to IndexedDB
     await Storage.saveCapture(capture);
     
-    // Release the in-memory reference but blob is preserved in IndexedDB
-    capture.imageBlob = null;
+    console.log('Captured frame', AppState.sequenceNum, 'size:', imageBlob.size);
     
     // Update mini map
     if (gpsReading.available) {
@@ -714,6 +784,7 @@ function startRecordingTimer() {
     clearInterval(AppState.recordingTimer);
   }
   
+  updateRecordingTime();
   AppState.recordingTimer = setInterval(() => {
     if (!AppState.isPaused) {
       updateRecordingTime();
@@ -771,13 +842,15 @@ async function resumeRecoverySession() {
   AppState.sequenceNum = session.captureCount;
   AppState.startTime = Date.now() - (session.duration * 1000);
   
-  // Start recording
-  AppState.isRecording = true;
-  AppState.isPaused = false;
+  // Update session status first
   session.status = 'recording';
   await Storage.updateSession(session);
   
-  // Initialize sensors and start
+  // Now start recording components
+  AppState.isRecording = true;
+  AppState.isPaused = false;
+  
+  // Initialize sensors
   AppState.gpsManager = new GPSManager();
   AppState.gpsManager.onUpdate = updateGPSDisplay;
   AppState.gpsManager.start();
@@ -794,6 +867,7 @@ async function resumeRecoverySession() {
   startCaptureLoop();
   startRecordingTimer();
   updateRecordingUI();
+  document.getElementById('capacity-bar').classList.add('visible');
   
   showToast('Session resumed', 'success');
 }
@@ -893,15 +967,16 @@ function updateGPSStatus(status) {
 }
 
 function updateAccelDisplay(reading) {
+  const el = document.getElementById('accel-values');
   if (!reading) {
-    document.getElementById('accel-values').textContent = '--';
+    el.textContent = '--';
     return;
   }
   
-  const x = reading.x.toFixed(1);
-  const y = reading.y.toFixed(1);
-  const z = reading.z.toFixed(1);
-  document.getElementById('accel-values').textContent = `${x}, ${y}, ${z}`;
+  const x = (reading.x || 0).toFixed(1);
+  const y = (reading.y || 0).toFixed(1);
+  const z = (reading.z || 0).toFixed(1);
+  el.textContent = `${x},${y},${z}`;
 }
 
 async function updateCapacityBar() {
@@ -910,7 +985,7 @@ async function updateCapacityBar() {
   const session = await Storage.getSession(AppState.currentSession.id);
   if (!session) return;
   
-  const usedMB = session.totalBytes / (1024 * 1024);
+  const usedMB = (session.totalBytes || 0) / (1024 * 1024);
   const limitMB = AppState.settings.githubLimit;
   const percent = (usedMB / limitMB) * 100;
   
@@ -934,7 +1009,7 @@ async function updateCapacityBar() {
     const capturesPerSecond = 1000 / session.settings.captureInterval;
     const remainingSeconds = remainingCaptures / capturesPerSecond;
     
-    document.getElementById('capacity-time').textContent = `~${formatDuration(remainingSeconds)} remaining`;
+    document.getElementById('capacity-time').textContent = `~${formatDuration(remainingSeconds)} left`;
   }
 }
 
@@ -1011,7 +1086,7 @@ function createSessionItem(session) {
   };
   
   const date = new Date(session.createdAt).toLocaleDateString();
-  const size = (session.totalBytes / (1024 * 1024)).toFixed(1);
+  const size = ((session.totalBytes || 0) / (1024 * 1024)).toFixed(1);
   const duration = formatDuration(session.duration || 0);
   
   item.innerHTML = `
@@ -1021,7 +1096,7 @@ function createSessionItem(session) {
     </div>
     <div class="session-meta">
       <span>📅 ${date}</span>
-      <span>📷 ${session.captureCount}</span>
+      <span>📷 ${session.captureCount || 0}</span>
       <span>💾 ${size} MB</span>
       <span>⏱️ ${duration}</span>
     </div>
@@ -1079,28 +1154,22 @@ async function resumeSession(sessionId) {
   hidePanel('sessions-panel');
   
   AppState.currentSession = session;
-  AppState.sequenceNum = session.captureCount;
-  AppState.startTime = Date.now() - (session.duration * 1000);
+  AppState.sequenceNum = session.captureCount || 0;
+  AppState.startTime = Date.now() - ((session.duration || 0) * 1000);
   
   await startRecording();
 }
 
 async function publishSession(sessionId) {
-  if (!AppState.settings.githubToken || !AppState.settings.githubRepo) {
-    showToast('Please configure GitHub settings first', 'warning');
-    showPanel('settings-panel');
-    return;
-  }
-  
   hidePanel('sessions-panel');
   showPublishModal();
   
   try {
     await Publisher.startPublish(sessionId, {
-      token: AppState.settings.githubToken,
-      repo: AppState.settings.githubRepo,
-      branch: AppState.settings.githubBranch,
-      contributor: AppState.settings.contributor
+      token: CONFIG.GITHUB_TOKEN,
+      repo: CONFIG.GITHUB_REPO,
+      branch: CONFIG.GITHUB_BRANCH,
+      contributor: CONFIG.CONTRIBUTOR
     }, {
       onProgress: updatePublishProgress,
       onComplete: onPublishComplete,
@@ -1215,15 +1284,15 @@ async function showMapView() {
   AppState.currentView = 'map';
   
   // Initialize map if needed
-  if (!CoverageMap.getState().initialized && AppState.settings.mapboxToken) {
-    await CoverageMap.init('coverage-map', AppState.settings.mapboxToken);
+  if (!CoverageMap.getState().initialized && CONFIG.MAPBOX_TOKEN) {
+    await CoverageMap.init('coverage-map', CONFIG.MAPBOX_TOKEN);
     
     // Load coverage data
-    if (AppState.settings.githubRepo && AppState.settings.githubToken) {
+    if (CONFIG.GITHUB_REPO && CONFIG.GITHUB_TOKEN) {
       await CoverageMap.loadCoverage({
-        repo: AppState.settings.githubRepo,
-        branch: AppState.settings.githubBranch,
-        token: AppState.settings.githubToken
+        repo: CONFIG.GITHUB_REPO,
+        branch: CONFIG.GITHUB_BRANCH,
+        token: CONFIG.GITHUB_TOKEN
       });
     }
     
@@ -1293,49 +1362,12 @@ function showToast(message, type = 'info') {
 // ============================================
 
 function formatDuration(seconds) {
+  if (!seconds || seconds < 0) return '0s';
   if (seconds < 60) return `${Math.round(seconds)}s`;
   if (seconds < 3600) return `${Math.round(seconds / 60)}m`;
   const hours = Math.floor(seconds / 3600);
   const mins = Math.round((seconds % 3600) / 60);
   return `${hours}h ${mins}m`;
-}
-
-// ============================================
-// GitHub Connection Test
-// ============================================
-
-async function testGitHubConnection() {
-  const token = document.getElementById('github-token').value.trim();
-  const repo = document.getElementById('github-repo').value.trim();
-  const statusEl = document.getElementById('github-status');
-  
-  if (!token || !repo) {
-    statusEl.className = 'connection-status error';
-    statusEl.textContent = 'Please enter token and repository';
-    return;
-  }
-  
-  statusEl.className = 'connection-status';
-  statusEl.textContent = 'Testing...';
-  
-  try {
-    const result = await Publisher.validateGitHubAccess({
-      token,
-      repo,
-      branch: document.getElementById('github-branch').value.trim() || 'main'
-    });
-    
-    if (result.valid) {
-      statusEl.className = 'connection-status success';
-      statusEl.textContent = `✓ Connected as ${result.user}. Quota: ${result.rateLimit.remaining}/${result.rateLimit.limit}`;
-    } else {
-      statusEl.className = 'connection-status error';
-      statusEl.textContent = '✕ ' + result.errors.join(', ');
-    }
-  } catch (error) {
-    statusEl.className = 'connection-status error';
-    statusEl.textContent = '✕ ' + error.message;
-  }
 }
 
 // ============================================
@@ -1396,7 +1428,6 @@ function initializeUI() {
   document.getElementById('btn-settings').addEventListener('click', () => showPanel('settings-panel'));
   document.getElementById('settings-back').addEventListener('click', () => hidePanel('settings-panel'));
   document.getElementById('btn-save-settings').addEventListener('click', saveSettings);
-  document.getElementById('btn-test-github').addEventListener('click', testGitHubConnection);
   
   // Sessions panel
   document.getElementById('btn-clear-all').addEventListener('click', clearAllSessions);
@@ -1411,12 +1442,14 @@ function initializeUI() {
   
   // Publish modal
   document.getElementById('btn-pause-publish').addEventListener('click', () => {
-    Publisher.pausePublish();
-    document.getElementById('btn-pause-publish').textContent = 'Resume';
-    document.getElementById('btn-pause-publish').onclick = () => {
+    const btn = document.getElementById('btn-pause-publish');
+    if (btn.textContent.includes('Pause')) {
+      Publisher.pausePublish();
+      btn.innerHTML = '<span class="btn-label">Resume</span>';
+    } else {
       Publisher.resumePublish();
-      document.getElementById('btn-pause-publish').textContent = 'Pause';
-    };
+      btn.innerHTML = '<span class="btn-label">Pause</span>';
+    }
   });
   
   document.getElementById('btn-cancel-publish').addEventListener('click', async () => {
@@ -1428,4 +1461,3 @@ function initializeUI() {
   // Warning banner
   document.getElementById('warning-dismiss').addEventListener('click', hideWarning);
 }
-

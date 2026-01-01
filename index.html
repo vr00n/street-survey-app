@@ -2,318 +2,281 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
   <meta name="theme-color" content="#1a1a2e">
   <meta name="apple-mobile-web-app-capable" content="yes">
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
   <title>Street Survey Collector</title>
-  
-  <!-- Mapbox GL JS -->
-  <script src="https://api.mapbox.com/mapbox-gl-js/v3.0.1/mapbox-gl.js"></script>
-  <link href="https://api.mapbox.com/mapbox-gl-js/v3.0.1/mapbox-gl.css" rel="stylesheet">
-  
-  <!-- Turf.js for geospatial analysis -->
-  <script src="https://cdn.jsdelivr.net/npm/@turf/turf@6/turf.min.js"></script>
-  
-  <!-- JSZip for local export -->
-  <script src="https://cdn.jsdelivr.net/npm/jszip@3.10.1/dist/jszip.min.js"></script>
-  
-  <!-- Dexie for IndexedDB -->
-  <script src="https://cdn.jsdelivr.net/npm/dexie@3.2.4/dist/dexie.min.js"></script>
-  
+  <link href="https://api.mapbox.com/mapbox-gl-js/v2.15.0/mapbox-gl.css" rel="stylesheet">
   <link rel="stylesheet" href="styles.css">
 </head>
 <body>
-  <!-- Main App Container -->
-  <div id="app" class="app-container">
+  <div id="app">
     
-    <!-- Camera View (Recording Screen) -->
+    <!-- Camera View (Main) -->
     <div id="camera-view" class="view active">
+      
       <!-- Camera Preview -->
       <video id="camera-preview" autoplay playsinline muted></video>
       
       <!-- Top Status Bar -->
-      <div class="status-bar">
-        <div class="status-left">
-          <div class="gps-status" id="gps-status">
-            <span class="gps-icon">📍</span>
-            <span class="gps-coords" id="gps-coords">---, ---</span>
-            <span class="gps-accuracy" id="gps-accuracy"></span>
-          </div>
+      <div id="top-bar">
+        <div class="status-group gps-group">
+          <span class="status-icon">📍</span>
+          <span id="gps-coords">---, ---</span>
+          <span id="gps-accuracy" class="accuracy-badge">---</span>
         </div>
-        <div class="status-center">
-          <div class="recording-indicator" id="recording-indicator">
-            <span class="rec-dot"></span>
-            <span class="rec-time" id="rec-time">00:00:00</span>
-          </div>
+        
+        <div id="recording-indicator">
+          <span class="rec-dot"></span>
+          <span id="rec-time">00:00:00</span>
         </div>
-        <div class="status-right">
-          <div class="accel-display" id="accel-display">
-            <span class="accel-label">XYZ:</span>
-            <span class="accel-values" id="accel-values">--</span>
-          </div>
+        
+        <div class="status-group accel-group">
+          <span class="status-icon">📐</span>
+          <span id="accel-values">--</span>
         </div>
       </div>
       
-      <!-- Storage & Capacity Bar -->
-      <div class="capacity-bar" id="capacity-bar">
-        <div class="capacity-progress">
-          <div class="capacity-fill" id="capacity-fill"></div>
-        </div>
+      <!-- Capacity Bar -->
+      <div id="capacity-bar">
+        <div id="capacity-fill"></div>
         <div class="capacity-text">
-          <span id="capacity-used">0 MB</span> / <span id="capacity-limit">1 GB</span>
-          <span class="capacity-time" id="capacity-time"></span>
+          <span id="capacity-used">0 MB</span>
+          <span>/</span>
+          <span id="capacity-limit">1000 MB</span>
         </div>
+        <span id="capacity-time"></span>
       </div>
       
-      <!-- Warning Banners -->
-      <div class="warning-banner" id="warning-banner" style="display: none;">
-        <span class="warning-icon">⚠️</span>
-        <span class="warning-text" id="warning-text"></span>
-        <button class="warning-dismiss" id="warning-dismiss">✕</button>
+      <!-- Warning Banner -->
+      <div id="warning-banner" style="display: none;">
+        <span id="warning-text"></span>
+        <button id="warning-dismiss">✕</button>
       </div>
       
-      <!-- Mini Map (during recording) -->
-      <div class="mini-map-container" id="mini-map-container" style="display: none;">
-        <div id="mini-map" class="mini-map"></div>
+      <!-- Mini Map -->
+      <div id="mini-map-container" style="display: none;">
+        <div id="mini-map"></div>
       </div>
       
       <!-- Capture Counter -->
-      <div class="capture-counter" id="capture-counter">
+      <div id="capture-counter">
         <span class="counter-icon">📷</span>
-        <span class="counter-value" id="counter-value">0</span>
+        <span id="counter-value">0</span>
       </div>
       
-      <!-- Bottom Control Bar -->
-      <div class="control-bar">
-        <!-- Idle State Controls -->
-        <div class="controls-idle" id="controls-idle">
-          <button class="btn btn-secondary" id="btn-sessions">
-            <span class="btn-icon">📁</span>
-            <span class="btn-label">Sessions</span>
+      <!-- Bottom Controls -->
+      <div id="bottom-bar">
+        <!-- Navigation Row -->
+        <div class="nav-row">
+          <button id="btn-sessions" class="nav-btn">
+            <span class="nav-icon">📁</span>
+            <span class="nav-label">Sessions</span>
           </button>
-          <button class="btn btn-primary btn-large" id="btn-start">
-            <span class="btn-icon">▶</span>
-            <span class="btn-label">Start</span>
+          <button id="btn-map" class="nav-btn">
+            <span class="nav-icon">🗺️</span>
+            <span class="nav-label">Map</span>
           </button>
-          <button class="btn btn-secondary" id="btn-map">
-            <span class="btn-icon">🗺️</span>
-            <span class="btn-label">Map</span>
-          </button>
-        </div>
-        
-        <!-- Recording State Controls -->
-        <div class="controls-recording" id="controls-recording" style="display: none;">
-          <button class="btn btn-warning" id="btn-pause">
-            <span class="btn-icon">⏸</span>
-            <span class="btn-label">Pause</span>
-          </button>
-          <button class="btn btn-danger" id="btn-stop">
-            <span class="btn-icon">⏹</span>
-            <span class="btn-label">Stop</span>
+          <button id="btn-settings" class="nav-btn">
+            <span class="nav-icon">⚙️</span>
+            <span class="nav-label">Settings</span>
           </button>
         </div>
         
-        <!-- Paused State Controls -->
-        <div class="controls-paused" id="controls-paused" style="display: none;">
-          <button class="btn btn-success" id="btn-resume">
-            <span class="btn-icon">▶</span>
-            <span class="btn-label">Resume</span>
-          </button>
-          <button class="btn btn-danger" id="btn-stop-paused">
-            <span class="btn-icon">⏹</span>
-            <span class="btn-label">Stop</span>
-          </button>
-        </div>
-        
-        <!-- Stopped State Controls -->
-        <div class="controls-stopped" id="controls-stopped" style="display: none;">
-          <button class="btn btn-secondary" id="btn-new-session">
-            <span class="btn-icon">➕</span>
-            <span class="btn-label">New</span>
-          </button>
-          <button class="btn btn-primary" id="btn-publish">
-            <span class="btn-icon">☁️</span>
-            <span class="btn-label">Publish</span>
-          </button>
-          <button class="btn btn-secondary" id="btn-export">
-            <span class="btn-icon">💾</span>
-            <span class="btn-label">Export</span>
-          </button>
-        </div>
-      </div>
-      
-      <!-- Settings Button -->
-      <button class="settings-btn" id="btn-settings">⚙️</button>
-    </div>
-    
-    <!-- Sessions Panel (Slide-out) -->
-    <div id="sessions-panel" class="panel">
-      <div class="panel-header">
-        <button class="panel-back" id="sessions-back">←</button>
-        <h2>Sessions</h2>
-        <button class="panel-action" id="btn-clear-all">Clear All</button>
-      </div>
-      <div class="panel-content">
-        <div class="sessions-list" id="sessions-list">
-          <!-- Sessions will be populated here -->
-          <div class="empty-state" id="no-sessions">
-            <span class="empty-icon">📂</span>
-            <p>No sessions yet</p>
-            <p class="empty-hint">Start recording to create your first session</p>
+        <!-- Recording Controls -->
+        <div class="controls-row">
+          <!-- Idle State -->
+          <div id="controls-idle" class="control-set">
+            <button id="btn-start" class="btn btn-large btn-success">
+              <span class="btn-icon">▶</span>
+              <span class="btn-label">New</span>
+            </button>
+          </div>
+          
+          <!-- Recording State -->
+          <div id="controls-recording" class="control-set" style="display: none;">
+            <button id="btn-pause" class="btn btn-large btn-warning">
+              <span class="btn-icon">⏸</span>
+              <span class="btn-label">Pause</span>
+            </button>
+            <button id="btn-stop" class="btn btn-large btn-danger">
+              <span class="btn-icon">⏹</span>
+              <span class="btn-label">Stop</span>
+            </button>
+          </div>
+          
+          <!-- Paused State -->
+          <div id="controls-paused" class="control-set" style="display: none;">
+            <button id="btn-resume" class="btn btn-large btn-success">
+              <span class="btn-icon">▶</span>
+              <span class="btn-label">Resume</span>
+            </button>
+            <button id="btn-stop-paused" class="btn btn-large btn-danger">
+              <span class="btn-icon">⏹</span>
+              <span class="btn-label">Stop</span>
+            </button>
+          </div>
+          
+          <!-- Stopped State -->
+          <div id="controls-stopped" class="control-set" style="display: none;">
+            <button id="btn-new-session" class="btn btn-large btn-secondary">
+              <span class="btn-icon">+</span>
+              <span class="btn-label">New</span>
+            </button>
+            <button id="btn-publish" class="btn btn-large btn-primary">
+              <span class="btn-icon">☁️</span>
+              <span class="btn-label">Publish</span>
+            </button>
+            <button id="btn-export" class="btn btn-large btn-secondary">
+              <span class="btn-icon">💾</span>
+              <span class="btn-label">Export</span>
+            </button>
           </div>
         </div>
       </div>
     </div>
     
-    <!-- Coverage Map View -->
+    <!-- Map View -->
     <div id="map-view" class="view">
-      <div class="map-header">
-        <button class="panel-back" id="map-back">←</button>
+      <div id="map-header">
+        <button id="map-back" class="back-btn">← Back</button>
         <h2>Coverage Map</h2>
-        <div class="map-controls">
-          <button class="map-control-btn" id="btn-layers">Layers</button>
-          <button class="map-control-btn" id="btn-filter">Filter</button>
+        <div class="spacer"></div>
+      </div>
+      <div id="coverage-map"></div>
+      <div id="map-legend">
+        <div class="legend-item">
+          <span class="legend-color published"></span>
+          <span>Published</span>
+        </div>
+        <div class="legend-item">
+          <span class="legend-color pending"></span>
+          <span>Pending</span>
+        </div>
+        <div class="legend-item">
+          <span class="legend-color current"></span>
+          <span>Current</span>
         </div>
       </div>
-      <div id="coverage-map" class="coverage-map"></div>
-      <div class="map-stats" id="map-stats">
-        <div class="stat">
-          <span class="stat-value" id="stat-coverage">--%</span>
-          <span class="stat-label">Coverage</span>
-        </div>
-        <div class="stat">
-          <span class="stat-value" id="stat-gaps">-- km</span>
-          <span class="stat-label">Gaps</span>
-        </div>
-        <div class="stat">
-          <span class="stat-value" id="stat-sessions">--</span>
-          <span class="stat-label">Sessions</span>
-        </div>
-      </div>
-      <button class="btn btn-primary map-record-btn" id="btn-record-here">
-        Start Recording in This Area
+      <button id="btn-record-here" class="fab">
+        <span>📷 Record Here</span>
       </button>
+    </div>
+    
+    <!-- Sessions Panel -->
+    <div id="sessions-panel" class="panel">
+      <div class="panel-header">
+        <button id="sessions-back" class="back-btn">← Back</button>
+        <h2>Sessions</h2>
+        <button id="btn-clear-all" class="text-btn danger">Clear All</button>
+      </div>
+      <div id="sessions-list">
+        <div id="no-sessions" class="empty-state">
+          <span class="empty-icon">📁</span>
+          <p>No sessions yet</p>
+          <p class="small">Start recording to create a session</p>
+        </div>
+      </div>
     </div>
     
     <!-- Settings Panel -->
     <div id="settings-panel" class="panel">
       <div class="panel-header">
-        <button class="panel-back" id="settings-back">←</button>
+        <button id="settings-back" class="back-btn">← Back</button>
         <h2>Settings</h2>
+        <div class="spacer"></div>
       </div>
-      <div class="panel-content">
+      <div class="settings-content">
+        
         <div class="settings-section">
-          <h3>GitHub Configuration</h3>
-          <div class="form-group">
-            <label for="github-token">Personal Access Token</label>
-            <input type="password" id="github-token" placeholder="ghp_xxxxxxxxxxxx">
-            <small>Requires repo scope for private repos</small>
+          <h3>🔑 API Tokens</h3>
+          
+          <div class="setting-item vertical">
+            <label for="github-token">GitHub Personal Access Token</label>
+            <input type="password" id="github-token" placeholder="ghp_xxxxxxxxxxxx" class="setting-input-full">
+            <span class="setting-hint">Required for publishing. Needs 'repo' scope.</span>
           </div>
-          <div class="form-group">
-            <label for="github-repo">Repository (owner/repo)</label>
-            <input type="text" id="github-repo" placeholder="username/street-survey-data">
+          
+          <div class="setting-item vertical">
+            <label for="github-repo">GitHub Repository</label>
+            <input type="text" id="github-repo" placeholder="username/repo-name" class="setting-input-full">
+            <span class="setting-hint">Where to publish survey data</span>
           </div>
-          <div class="form-group">
+          
+          <div class="setting-item vertical">
             <label for="github-branch">Branch</label>
-            <input type="text" id="github-branch" placeholder="main" value="main">
+            <input type="text" id="github-branch" placeholder="main" value="main" class="setting-input-full">
           </div>
-          <div class="form-group">
-            <label for="contributor-name">Contributor Name</label>
-            <input type="text" id="contributor-name" placeholder="Your name (optional)">
+          
+          <div class="setting-item vertical">
+            <label for="contributor">Contributor Name</label>
+            <input type="text" id="contributor" placeholder="Your name or username" class="setting-input-full">
+            <span class="setting-hint">Shown in coverage map</span>
           </div>
-          <button class="btn btn-secondary" id="btn-test-github">Test Connection</button>
-          <div class="connection-status" id="github-status"></div>
-        </div>
-        
-        <div class="settings-section">
-          <h3>Mapbox Configuration</h3>
-          <div class="form-group">
-            <label for="mapbox-token">Access Token</label>
-            <input type="password" id="mapbox-token" placeholder="pk.xxxxxxxxxxxx">
-            <small>Get your token at mapbox.com</small>
+          
+          <div class="setting-item vertical">
+            <label for="mapbox-token">Mapbox Access Token</label>
+            <input type="password" id="mapbox-token" placeholder="pk.xxxxxxxx" class="setting-input-full">
+            <span class="setting-hint">Required for map visualization</span>
           </div>
         </div>
         
         <div class="settings-section">
-          <h3>Capture Settings</h3>
-          <div class="form-group">
+          <h3>📷 Capture Settings</h3>
+          
+          <div class="setting-item">
             <label for="capture-interval">Capture Interval</label>
-            <select id="capture-interval">
-              <option value="1000">1 second</option>
-              <option value="2000" selected>2 seconds</option>
-              <option value="5000">5 seconds</option>
-              <option value="10000">10 seconds</option>
-            </select>
+            <div class="setting-input">
+              <input type="number" id="capture-interval" value="2000" min="500" max="10000" step="500">
+              <span class="input-suffix">ms</span>
+            </div>
           </div>
-          <div class="form-group">
+          
+          <div class="setting-item">
             <label for="image-quality">Image Quality</label>
-            <select id="image-quality">
-              <option value="0.5">Low (~30KB)</option>
-              <option value="0.7" selected>Medium (~80KB)</option>
-              <option value="0.9">High (~150KB)</option>
-            </select>
+            <div class="setting-input">
+              <input type="range" id="image-quality" min="0.3" max="1.0" step="0.1" value="0.7">
+              <span class="range-value">0.7</span>
+            </div>
           </div>
-          <div class="form-group">
-            <label for="image-resolution">Max Resolution</label>
-            <select id="image-resolution">
-              <option value="640">640px (small)</option>
-              <option value="1280" selected>1280px (medium)</option>
-              <option value="1920">1920px (large)</option>
-            </select>
+          
+          <div class="setting-item">
+            <label for="image-resolution">Max Width</label>
+            <div class="setting-input">
+              <select id="image-resolution">
+                <option value="640">640px (Small)</option>
+                <option value="1280" selected>1280px (Medium)</option>
+                <option value="1920">1920px (Large)</option>
+              </select>
+            </div>
           </div>
         </div>
         
         <div class="settings-section">
-          <h3>Storage Limits</h3>
-          <div class="form-group">
-            <label for="github-limit">GitHub Repo Limit</label>
-            <select id="github-limit">
-              <option value="500">500 MB</option>
-              <option value="1000" selected>1 GB</option>
-              <option value="2000">2 GB</option>
-              <option value="5000">5 GB (max)</option>
-            </select>
+          <h3>💾 Storage</h3>
+          
+          <div class="setting-item">
+            <label for="github-limit">GitHub Limit</label>
+            <div class="setting-input">
+              <input type="number" id="github-limit" value="1000" min="100" max="5000" step="100">
+              <span class="input-suffix">MB</span>
+            </div>
           </div>
-          <div class="storage-info" id="storage-info">
-            <div class="storage-row">
+          
+          <div class="storage-info">
+            <div class="info-row">
               <span>Local Storage Used:</span>
               <span id="local-storage-used">-- MB</span>
             </div>
-            <div class="storage-row">
-              <span>Local Storage Available:</span>
+            <div class="info-row">
+              <span>Available:</span>
               <span id="local-storage-available">-- MB</span>
             </div>
           </div>
         </div>
         
-        <button class="btn btn-primary" id="btn-save-settings">Save Settings</button>
-      </div>
-    </div>
-    
-    <!-- Publish Progress Modal -->
-    <div id="publish-modal" class="modal" style="display: none;">
-      <div class="modal-content">
-        <h3>Publishing to GitHub</h3>
-        <div class="publish-progress">
-          <div class="progress-bar">
-            <div class="progress-fill" id="publish-progress-fill"></div>
-          </div>
-          <div class="progress-text">
-            <span id="publish-completed">0</span> / <span id="publish-total">0</span>
-          </div>
-          <div class="progress-percent" id="publish-percent">0%</div>
-          <div class="progress-time" id="publish-time">Estimating...</div>
-        </div>
-        <div class="publish-status" id="publish-status">Preparing...</div>
-        <div class="publish-errors" id="publish-errors" style="display: none;">
-          <span class="error-icon">⚠️</span>
-          <span id="publish-error-count">0</span> failed (will retry)
-        </div>
-        <div class="modal-actions">
-          <button class="btn btn-secondary" id="btn-pause-publish">Pause</button>
-          <button class="btn btn-danger" id="btn-cancel-publish">Cancel</button>
-        </div>
+        <button id="btn-save-settings" class="btn btn-primary btn-full">Save Settings</button>
       </div>
     </div>
     
@@ -321,13 +284,22 @@
     <div id="session-name-modal" class="modal" style="display: none;">
       <div class="modal-content">
         <h3>New Session</h3>
-        <div class="form-group">
-          <label for="session-name">Session Name (optional)</label>
-          <input type="text" id="session-name" placeholder="e.g., Downtown Morning Route">
-        </div>
+        <input type="text" id="session-name" placeholder="Session name (optional)">
         <div class="modal-actions">
-          <button class="btn btn-secondary" id="btn-cancel-session">Cancel</button>
-          <button class="btn btn-primary" id="btn-create-session">Start Recording</button>
+          <button id="btn-cancel-session" class="btn btn-secondary">Cancel</button>
+          <button id="btn-create-session" class="btn btn-primary">Start Recording</button>
+        </div>
+      </div>
+    </div>
+    
+    <!-- Delete Confirmation Modal -->
+    <div id="delete-modal" class="modal" style="display: none;">
+      <div class="modal-content">
+        <h3>Delete Session?</h3>
+        <p>This will permanently delete all captures in this session.</p>
+        <div class="modal-actions">
+          <button id="btn-cancel-delete" class="btn btn-secondary">Cancel</button>
+          <button id="btn-confirm-delete" class="btn btn-danger">Delete</button>
         </div>
       </div>
     </div>
@@ -335,51 +307,67 @@
     <!-- Recovery Modal -->
     <div id="recovery-modal" class="modal" style="display: none;">
       <div class="modal-content">
-        <h3>Resume Interrupted Session?</h3>
-        <p id="recovery-info">A previous session was interrupted.</p>
-        <div class="recovery-details" id="recovery-details">
-          <div class="recovery-row">
-            <span>Session:</span>
-            <span id="recovery-session-name">--</span>
-          </div>
-          <div class="recovery-row">
-            <span>Captures:</span>
-            <span id="recovery-capture-count">--</span>
-          </div>
-          <div class="recovery-row warning" id="recovery-gap-warning" style="display: none;">
-            <span>⚠️ Potential missed frames:</span>
-            <span id="recovery-missed-frames">--</span>
-          </div>
+        <h3>🔄 Session Recovery</h3>
+        <p>Found an interrupted session:</p>
+        <div class="recovery-info">
+          <p><strong id="recovery-session-name"></strong></p>
+          <p><span id="recovery-capture-count">0</span> captures recorded</p>
+        </div>
+        <div id="recovery-gap-warning" class="warning-box" style="display: none;">
+          <span class="warning-icon">⚠️</span>
+          <span>~<span id="recovery-missed-frames">0</span> frames may have been missed during interruption</span>
         </div>
         <div class="modal-actions">
-          <button class="btn btn-secondary" id="btn-discard-recovery">Start Fresh</button>
-          <button class="btn btn-primary" id="btn-resume-recovery">Resume Session</button>
+          <button id="btn-discard-recovery" class="btn btn-secondary">Discard</button>
+          <button id="btn-resume-recovery" class="btn btn-success">Resume Session</button>
         </div>
       </div>
     </div>
     
-    <!-- Confirm Delete Modal -->
-    <div id="delete-modal" class="modal" style="display: none;">
-      <div class="modal-content">
-        <h3>Delete Session?</h3>
-        <p>This will permanently delete the session and all its data.</p>
+    <!-- Publish Progress Modal -->
+    <div id="publish-modal" class="modal" style="display: none;">
+      <div class="modal-content modal-large">
+        <h3>☁️ Publishing to GitHub</h3>
+        
+        <div class="publish-progress">
+          <div class="progress-bar">
+            <div id="publish-progress-fill" class="progress-fill"></div>
+          </div>
+          <div class="progress-stats">
+            <span><span id="publish-completed">0</span> / <span id="publish-total">0</span></span>
+            <span id="publish-percent">0%</span>
+          </div>
+        </div>
+        
+        <p id="publish-status" class="publish-status">Preparing...</p>
+        <p id="publish-time" class="publish-time"></p>
+        
+        <div id="publish-errors" class="warning-box" style="display: none;">
+          <span class="warning-icon">⚠️</span>
+          <span><span id="publish-error-count">0</span> uploads failed (will retry)</span>
+        </div>
+        
         <div class="modal-actions">
-          <button class="btn btn-secondary" id="btn-cancel-delete">Cancel</button>
-          <button class="btn btn-danger" id="btn-confirm-delete">Delete</button>
+          <button id="btn-pause-publish" class="btn btn-warning">
+            <span class="btn-label">Pause</span>
+          </button>
+          <button id="btn-cancel-publish" class="btn btn-danger">
+            <span class="btn-label">Cancel</span>
+          </button>
         </div>
       </div>
     </div>
     
-    <!-- Toast Notifications -->
-    <div id="toast-container" class="toast-container"></div>
-    
+    <!-- Toast Container -->
+    <div id="toast-container"></div>
   </div>
-
-  <!-- App Scripts -->
+  
+  <script src="https://api.mapbox.com/mapbox-gl-js/v2.15.0/mapbox-gl.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@turf/turf@6/turf.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
   <script src="storage.js"></script>
-  <script src="publisher.js"></script>
   <script src="map.js"></script>
+  <script src="publisher.js"></script>
   <script src="app.js"></script>
 </body>
 </html>
-

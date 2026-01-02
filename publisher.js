@@ -260,28 +260,26 @@ async function uploadFile(config, path, content, message, existingSha = null) {
 async function uploadImage(config, capture, sessionId) {
   const path = `sessions/${sessionId}/images/${capture.sequenceNum.toString().padStart(6, '0')}.jpg`;
   
-  // Validate blob before attempting upload
-  if (!capture.imageBlob) {
-    debugError(`No imageBlob for capture #${capture.sequenceNum}`);
-    throw new Error(`Capture #${capture.sequenceNum} has no image data`);
-  }
+  // Check for image data - support both new format (imageData) and legacy (imageBlob)
+  const hasImageData = capture.imageData && (capture.imageData instanceof ArrayBuffer || capture.imageData.byteLength !== undefined);
+  const hasImageBlob = capture.imageBlob && capture.imageBlob instanceof Blob && capture.imageBlob.size > 0;
   
-  if (!(capture.imageBlob instanceof Blob)) {
-    debugError(`Invalid imageBlob type for capture #${capture.sequenceNum}`, {
-      type: typeof capture.imageBlob,
-      constructor: capture.imageBlob?.constructor?.name
+  if (!hasImageData && !hasImageBlob) {
+    debugError(`No valid image data for capture #${capture.sequenceNum}`, {
+      hasImageData: !!capture.imageData,
+      imageDataType: capture.imageData?.constructor?.name,
+      hasImageBlob: !!capture.imageBlob,
+      imageBlobType: capture.imageBlob?.constructor?.name
     });
-    throw new Error(`Capture #${capture.sequenceNum} has invalid image data type`);
+    throw new Error(`Capture #${capture.sequenceNum} has no valid image data`);
   }
   
-  if (capture.imageBlob.size === 0) {
-    debugError(`Empty imageBlob for capture #${capture.sequenceNum}`);
-    throw new Error(`Capture #${capture.sequenceNum} has empty image data`);
-  }
+  const imageSize = hasImageData ? capture.imageData.byteLength : capture.imageBlob.size;
   
   debugLog(`Preparing upload for #${capture.sequenceNum}`, {
-    blobSize: capture.imageBlob.size,
-    blobType: capture.imageBlob.type
+    format: hasImageData ? 'ArrayBuffer' : 'Blob',
+    size: imageSize,
+    type: capture.imageType || 'image/jpeg'
   });
   
   // Check if file already exists (idempotent upload)
@@ -291,15 +289,22 @@ async function uploadImage(config, capture, sessionId) {
     return { url: existing.downloadUrl, skipped: true };
   }
   
-  // Convert blob to base64
-  const base64 = await blobToBase64(capture.imageBlob);
+  // Convert to base64
+  let base64;
+  if (hasImageData) {
+    // Convert ArrayBuffer to base64
+    base64 = arrayBufferToBase64(capture.imageData);
+    debugLog(`ArrayBuffer to base64 for #${capture.sequenceNum}: ${base64.length} chars`);
+  } else {
+    // Legacy: convert Blob to base64
+    base64 = await blobToBase64(capture.imageBlob);
+    debugLog(`Blob to base64 for #${capture.sequenceNum}: ${base64.length} chars`);
+  }
   
   if (!base64 || base64.length === 0) {
     debugError(`Base64 conversion returned empty result for #${capture.sequenceNum}`);
     throw new Error(`Failed to convert image #${capture.sequenceNum} to base64`);
   }
-  
-  debugLog(`Base64 ready for #${capture.sequenceNum}: ${base64.length} chars`);
   
   const result = await uploadFile(
     config,
@@ -309,6 +314,23 @@ async function uploadImage(config, capture, sessionId) {
   );
   
   return { url: result.url, skipped: false };
+}
+
+/**
+ * Convert ArrayBuffer to base64 string
+ * More reliable than Blob methods on iOS
+ */
+function arrayBufferToBase64(buffer) {
+  const bytes = new Uint8Array(buffer);
+  let binary = '';
+  const chunkSize = 8192;
+  
+  for (let i = 0; i < bytes.length; i += chunkSize) {
+    const chunk = bytes.subarray(i, Math.min(i + chunkSize, bytes.length));
+    binary += String.fromCharCode.apply(null, chunk);
+  }
+  
+  return btoa(binary);
 }
 
 /**
@@ -1036,12 +1058,17 @@ async function exportSessionAsZip(sessionId, onProgress = null) {
   for (const capture of captures) {
     const filename = `${capture.sequenceNum.toString().padStart(6, '0')}.jpg`;
     
-    // Check if imageBlob exists and is valid
-    if (capture.imageBlob && capture.imageBlob instanceof Blob && capture.imageBlob.size > 0) {
+    // Support both new format (imageData as ArrayBuffer) and legacy (imageBlob)
+    if (capture.imageData && capture.imageData.byteLength > 0) {
+      // New format: ArrayBuffer
+      imagesFolder.file(filename, capture.imageData);
+      imagesAdded++;
+    } else if (capture.imageBlob && capture.imageBlob instanceof Blob && capture.imageBlob.size > 0) {
+      // Legacy format: Blob
       imagesFolder.file(filename, capture.imageBlob);
       imagesAdded++;
     } else {
-      console.warn(`Capture ${capture.sequenceNum} has no valid image blob`);
+      console.warn(`Capture ${capture.sequenceNum} has no valid image data`);
     }
     
     processed++;

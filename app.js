@@ -737,6 +737,16 @@ async function captureFrame() {
       return;
     }
     
+    // Convert blob to ArrayBuffer for reliable IndexedDB storage on iOS
+    // Blobs can become "detached" and unreadable on iOS Safari/Chrome
+    let imageData;
+    try {
+      imageData = await imageBlob.arrayBuffer();
+    } catch (e) {
+      console.error('Failed to convert blob to ArrayBuffer:', e);
+      return;
+    }
+    
     // Get sensor readings
     const gpsReading = AppState.gpsManager?.getCurrentReading() || { available: false };
     const accelReading = AppState.accelManager?.getCurrentReading();
@@ -761,7 +771,9 @@ async function captureFrame() {
         y: Math.round(accelReading.y * 100) / 100,
         z: Math.round(accelReading.z * 100) / 100
       } : null,
-      imageBlob,
+      // Store as ArrayBuffer instead of Blob for iOS compatibility
+      imageData: imageData,
+      imageType: imageBlob.type || 'image/jpeg',
       imageSizeBytes: imageBlob.size,
       published: false,
       publishedUrl: null

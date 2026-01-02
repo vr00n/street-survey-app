@@ -292,13 +292,21 @@ async function uploadImage(config, capture, sessionId) {
   // Convert to base64
   let base64;
   if (hasImageData) {
-    // Convert ArrayBuffer to base64
+    // New format: ArrayBuffer - direct conversion
     base64 = arrayBufferToBase64(capture.imageData);
     debugLog(`ArrayBuffer to base64 for #${capture.sequenceNum}: ${base64.length} chars`);
-  } else {
-    // Legacy: convert Blob to base64
-    base64 = await blobToBase64(capture.imageBlob);
-    debugLog(`Blob to base64 for #${capture.sequenceNum}: ${base64.length} chars`);
+  } else if (hasImageBlob) {
+    // Legacy format: Blob - may fail on iOS if blob is detached
+    debugWarn(`Using legacy Blob format for #${capture.sequenceNum} - may fail on iOS`);
+    try {
+      base64 = await blobToBase64(capture.imageBlob);
+      debugLog(`Blob to base64 for #${capture.sequenceNum}: ${base64.length} chars`);
+    } catch (blobError) {
+      debugError(`Blob conversion failed for #${capture.sequenceNum} - this session was created with an older app version`, {
+        error: blobError.message
+      });
+      throw new Error(`Image #${capture.sequenceNum} data is corrupted. This session was created with an older app version. Please delete it and create a new session.`);
+    }
   }
   
   if (!base64 || base64.length === 0) {
@@ -599,6 +607,8 @@ async function uploadWithRetry(capture, maxRetries = 5) {
   
   debugLog(`Starting upload for capture #${capture.sequenceNum}`, {
     id: capture.id,
+    hasImageData: !!capture.imageData,
+    imageDataSize: capture.imageData?.byteLength,
     hasBlob: !!capture.imageBlob,
     blobSize: capture.imageBlob?.size
   });

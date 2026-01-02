@@ -3,6 +3,11 @@
  * Captures images, GPS, and accelerometer data for street surveys
  */
 
+// App version - increment this when making changes to force cache refresh
+const APP_VERSION = '1.0.1';
+window.APP_VERSION = APP_VERSION;
+console.log(`Street Survey Collector v${APP_VERSION}`);
+
 // ============================================
 // Configuration (loaded from settings)
 // ============================================

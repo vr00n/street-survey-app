@@ -113,6 +113,7 @@ const DebugConsole = (() => {
     
     // Log initialization
     addLog('info', 'debug', ['Debug console initialized']);
+    addLog('info', 'debug', [`App Version: ${window.APP_VERSION || 'unknown'}`]);
     addLog('info', 'debug', [`User Agent: ${navigator.userAgent}`]);
     addLog('info', 'debug', [`Platform: ${navigator.platform}`]);
     addLog('info', 'debug', [`Online: ${navigator.onLine}`]);

@@ -24,6 +24,34 @@ let publisherState = {
 const GITHUB_API = 'https://api.github.com';
 
 // ============================================
+// Debug Helpers
+// ============================================
+
+function debugLog(message, details = null) {
+  if (window.Debug) {
+    window.Debug.log('publisher', message, details);
+  }
+}
+
+function debugError(message, details = null) {
+  if (window.Debug) {
+    window.Debug.error('publisher', message, details);
+  }
+}
+
+function debugSuccess(message, details = null) {
+  if (window.Debug) {
+    window.Debug.success('publisher', message, details);
+  }
+}
+
+function debugWarn(message, details = null) {
+  if (window.Debug) {
+    window.Debug.warn('publisher', message, details);
+  }
+}
+
+// ============================================
 // GitHub API Helpers
 // ============================================
 
@@ -146,6 +174,9 @@ async function fileExists(config, path) {
  */
 async function uploadFile(config, path, content, message, existingSha = null) {
   const [owner, repo] = config.repo.split('/');
+  const contentSize = typeof content === 'string' ? content.length : 'binary';
+  
+  debugLog(`Uploading: ${path}`, { size: contentSize, hasSha: !!existingSha });
   
   const body = {
     message,
@@ -155,6 +186,7 @@ async function uploadFile(config, path, content, message, existingSha = null) {
   
   if (existingSha) {
     body.sha = existingSha;
+    debugLog(`Using existing SHA: ${existingSha.substring(0, 8)}...`);
   }
   
   const response = await fetch(
@@ -172,12 +204,14 @@ async function uploadFile(config, path, content, message, existingSha = null) {
   
   if (!response.ok) {
     const error = await response.json();
+    debugError(`Upload failed: ${path}`, { status: response.status, error: error.message });
     
     // Handle SHA mismatch error - file exists but we didn't provide SHA
     if (response.status === 422 && error.message?.includes('sha')) {
-      console.log(`File exists, fetching SHA for: ${path}`);
+      debugWarn(`SHA required for existing file, fetching: ${path}`);
       const existing = await fileExists(config, path);
       if (existing.exists && existing.sha) {
+        debugLog(`Retrying with SHA: ${existing.sha.substring(0, 8)}...`);
         // Retry with the SHA
         body.sha = existing.sha;
         const retryResponse = await fetch(
@@ -195,6 +229,7 @@ async function uploadFile(config, path, content, message, existingSha = null) {
         
         if (retryResponse.ok) {
           const retryData = await retryResponse.json();
+          debugSuccess(`Upload succeeded on retry: ${path}`);
           return {
             url: retryData.content.download_url,
             sha: retryData.content.sha,
@@ -203,6 +238,7 @@ async function uploadFile(config, path, content, message, existingSha = null) {
         }
         
         const retryError = await retryResponse.json();
+        debugError(`Retry also failed: ${path}`, { error: retryError.message });
         throw new Error(retryError.message || `Upload retry failed: ${retryResponse.status}`);
       }
     }
@@ -282,13 +318,36 @@ async function startPublish(sessionId, config, callbacks = {}) {
   // Get session and captures
   const session = await Storage.getSession(sessionId);
   if (!session) {
+    debugError('Session not found', { sessionId });
     throw new Error('Session not found');
   }
   
+  debugLog(`Found session: ${session.name || sessionId}`, {
+    captureCount: session.captureCount,
+    status: session.status
+  });
+  
   const captures = await Storage.getUnpublishedCaptures(sessionId);
   if (captures.length === 0) {
+    debugError('No captures to publish');
     throw new Error('No captures to publish');
   }
+  
+  // Check for captures with missing blobs
+  const capturesWithBlobs = captures.filter(c => c.imageBlob && c.imageBlob.size > 0);
+  const missingBlobs = captures.length - capturesWithBlobs.length;
+  
+  if (missingBlobs > 0) {
+    debugWarn(`${missingBlobs} captures have missing/empty blobs`, {
+      total: captures.length,
+      withBlobs: capturesWithBlobs.length
+    });
+  }
+  
+  debugLog(`Starting publish: ${capturesWithBlobs.length} captures`, {
+    repo: config.repo,
+    branch: config.branch
+  });
   
   // Initialize publish state (reset all fields to prevent stale data)
   publisherState = {
@@ -297,10 +356,10 @@ async function startPublish(sessionId, config, callbacks = {}) {
     isProcessing: false,
     currentSession: session,
     config,
-    queue: [...captures],
+    queue: [...capturesWithBlobs], // Only include captures with valid blobs
     completed: 0,
     failed: 0,
-    total: captures.length,
+    total: capturesWithBlobs.length,
     startTime: Date.now(),
     onProgress: callbacks.onProgress,
     onComplete: callbacks.onComplete,
@@ -311,7 +370,7 @@ async function startPublish(sessionId, config, callbacks = {}) {
   await Storage.savePublishState({
     sessionId,
     publishStarted: new Date().toISOString(),
-    totalToUpload: captures.length,
+    totalToUpload: capturesWithBlobs.length,
     completed: 0,
     failed: 0,
     inProgress: true
@@ -321,10 +380,12 @@ async function startPublish(sessionId, config, callbacks = {}) {
   session.status = 'publishing';
   await Storage.updateSession(session);
   
+  debugSuccess('Publish started, processing queue...');
+  
   // Start processing queue (don't await - runs in background)
   processQueue();
   
-  return { total: captures.length };
+  return { total: capturesWithBlobs.length };
 }
 
 /**
@@ -416,11 +477,19 @@ async function processQueue() {
 async function uploadWithRetry(capture, maxRetries = 5) {
   let lastError = null;
   
+  debugLog(`Starting upload for capture #${capture.sequenceNum}`, {
+    id: capture.id,
+    hasBlob: !!capture.imageBlob,
+    blobSize: capture.imageBlob?.size
+  });
+  
   for (let attempt = 1; attempt <= maxRetries; attempt++) {
     try {
       // Check network
       if (!navigator.onLine) {
+        debugWarn('Offline, waiting for network...');
         await waitForOnline();
+        debugLog('Back online, resuming');
       }
       
       const result = await uploadImage(
@@ -429,24 +498,38 @@ async function uploadWithRetry(capture, maxRetries = 5) {
         publisherState.currentSession.id
       );
       
+      if (result.skipped) {
+        debugLog(`Image #${capture.sequenceNum} already exists, skipped`);
+      } else {
+        debugSuccess(`Image #${capture.sequenceNum} uploaded successfully`);
+      }
+      
       return result;
       
     } catch (error) {
       lastError = error;
-      console.warn(`Upload attempt ${attempt} failed:`, error.message);
+      debugError(`Upload attempt ${attempt}/${maxRetries} failed for #${capture.sequenceNum}`, {
+        error: error.message,
+        stack: error.stack
+      });
       
       // Check for rate limit
       if (error.message.includes('rate limit') || error.message.includes('403')) {
+        debugWarn('Rate limited, waiting 60 seconds...');
         reportProgress('Rate limited. Waiting...');
         await delay(60000); // Wait 1 minute
       } else if (attempt < maxRetries) {
         // Exponential backoff
         const waitTime = Math.min(1000 * Math.pow(2, attempt), 60000);
+        debugLog(`Retrying in ${waitTime}ms...`);
         await delay(waitTime);
       }
     }
   }
   
+  debugError(`All ${maxRetries} attempts failed for #${capture.sequenceNum}`, {
+    lastError: lastError?.message
+  });
   throw lastError;
 }
 
@@ -456,6 +539,12 @@ async function uploadWithRetry(capture, maxRetries = 5) {
 async function finishPublish() {
   const session = publisherState.currentSession;
   const config = publisherState.config;
+  
+  debugLog('Finishing publish...', {
+    sessionId: session.id,
+    completed: publisherState.completed,
+    failed: publisherState.failed
+  });
   
   try {
     reportProgress('Uploading metadata...');

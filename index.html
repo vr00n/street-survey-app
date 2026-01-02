@@ -82,6 +82,10 @@
             <span class="nav-icon">⚙️</span>
             <span class="nav-label">Settings</span>
           </button>
+          <button id="btn-debug" class="nav-btn">
+            <span class="nav-icon">🐛</span>
+            <span class="nav-label">Debug</span>
+          </button>
         </div>
         
         <!-- Recording Controls -->
@@ -360,11 +364,45 @@
     
     <!-- Toast Container -->
     <div id="toast-container"></div>
+    
+    <!-- Debug Console -->
+    <div id="debug-panel" class="panel">
+      <div class="panel-header">
+        <button id="debug-back" class="back-btn">← Back</button>
+        <h2>Debug Console</h2>
+        <button id="btn-clear-logs" class="text-btn">Clear</button>
+      </div>
+      <div id="debug-controls">
+        <label class="toggle-label">
+          <input type="checkbox" id="debug-enabled" checked>
+          <span>Enable Logging</span>
+        </label>
+        <label class="toggle-label">
+          <input type="checkbox" id="debug-network">
+          <span>Network</span>
+        </label>
+        <label class="toggle-label">
+          <input type="checkbox" id="debug-verbose">
+          <span>Verbose</span>
+        </label>
+        <button id="btn-copy-logs" class="btn btn-secondary btn-small">Copy All</button>
+        <button id="btn-download-logs" class="btn btn-secondary btn-small">Download</button>
+      </div>
+      <div id="debug-stats">
+        <span id="debug-log-count">0 logs</span>
+        <span id="debug-error-count">0 errors</span>
+        <span id="debug-warn-count">0 warnings</span>
+      </div>
+      <div id="debug-log-container">
+        <div id="debug-log"></div>
+      </div>
+    </div>
   </div>
   
   <script src="https://api.mapbox.com/mapbox-gl-js/v2.15.0/mapbox-gl.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/@turf/turf@6/turf.min.js"></script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
+  <script src="debug.js"></script>
   <script src="storage.js"></script>
   <script src="map.js"></script>
   <script src="publisher.js"></script>

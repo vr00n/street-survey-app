@@ -474,8 +474,15 @@ class WakeLockManager {
         this.wakeLock.addEventListener('release', () => {
           console.warn('Wake lock released');
           this.wakeLock = null;
+          
+          // Auto-reacquire if still recording
+          if (AppState.isRecording && !AppState.isPaused) {
+            console.log('Auto-reacquiring wake lock...');
+            setTimeout(() => this.acquire(), 1000);
+          }
         });
         this.method = 'wakeLock';
+        console.log('Wake lock acquired');
         return { method: 'wakeLock', success: true };
       } catch (e) {
         console.warn('Wake lock failed, trying fallback:', e);
@@ -567,8 +574,13 @@ async function startRecording(sessionName = null) {
     AppState.gpsManager.start();
     
     AppState.accelManager = new AccelerometerManager();
-    await AppState.accelManager.requestPermission();
-    AppState.accelManager.start();
+    const accelPermission = await AppState.accelManager.requestPermission();
+    if (accelPermission) {
+      AppState.accelManager.start();
+      console.log('Accelerometer started');
+    } else {
+      console.warn('Accelerometer permission denied - continuing without it');
+    }
     
     // Acquire wake lock
     AppState.wakeLockManager = new WakeLockManager();

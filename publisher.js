@@ -260,15 +260,46 @@ async function uploadFile(config, path, content, message, existingSha = null) {
 async function uploadImage(config, capture, sessionId) {
   const path = `sessions/${sessionId}/images/${capture.sequenceNum.toString().padStart(6, '0')}.jpg`;
   
+  // Validate blob before attempting upload
+  if (!capture.imageBlob) {
+    debugError(`No imageBlob for capture #${capture.sequenceNum}`);
+    throw new Error(`Capture #${capture.sequenceNum} has no image data`);
+  }
+  
+  if (!(capture.imageBlob instanceof Blob)) {
+    debugError(`Invalid imageBlob type for capture #${capture.sequenceNum}`, {
+      type: typeof capture.imageBlob,
+      constructor: capture.imageBlob?.constructor?.name
+    });
+    throw new Error(`Capture #${capture.sequenceNum} has invalid image data type`);
+  }
+  
+  if (capture.imageBlob.size === 0) {
+    debugError(`Empty imageBlob for capture #${capture.sequenceNum}`);
+    throw new Error(`Capture #${capture.sequenceNum} has empty image data`);
+  }
+  
+  debugLog(`Preparing upload for #${capture.sequenceNum}`, {
+    blobSize: capture.imageBlob.size,
+    blobType: capture.imageBlob.type
+  });
+  
   // Check if file already exists (idempotent upload)
   const existing = await fileExists(config, path);
   if (existing.exists) {
-    console.log(`Image already exists: ${path}`);
+    debugLog(`Image already exists: ${path}`);
     return { url: existing.downloadUrl, skipped: true };
   }
   
   // Convert blob to base64
   const base64 = await blobToBase64(capture.imageBlob);
+  
+  if (!base64 || base64.length === 0) {
+    debugError(`Base64 conversion returned empty result for #${capture.sequenceNum}`);
+    throw new Error(`Failed to convert image #${capture.sequenceNum} to base64`);
+  }
+  
+  debugLog(`Base64 ready for #${capture.sequenceNum}: ${base64.length} chars`);
   
   const result = await uploadFile(
     config,
@@ -282,16 +313,83 @@ async function uploadImage(config, capture, sessionId) {
 
 /**
  * Convert blob to base64
+ * Uses multiple methods for mobile compatibility
  */
-function blobToBase64(blob) {
+async function blobToBase64(blob) {
+  // Validate blob first
+  if (!blob || !(blob instanceof Blob)) {
+    debugError('blobToBase64: Invalid blob', { blob: typeof blob });
+    throw new Error('Invalid blob provided');
+  }
+  
+  if (blob.size === 0) {
+    debugError('blobToBase64: Empty blob');
+    throw new Error('Blob is empty');
+  }
+  
+  debugLog(`Converting blob to base64: ${blob.size} bytes, type: ${blob.type}`);
+  
+  // Method 1: Try using arrayBuffer (more reliable on mobile)
+  try {
+    const arrayBuffer = await blob.arrayBuffer();
+    const bytes = new Uint8Array(arrayBuffer);
+    let binary = '';
+    const chunkSize = 8192; // Process in chunks to avoid call stack issues
+    
+    for (let i = 0; i < bytes.length; i += chunkSize) {
+      const chunk = bytes.subarray(i, Math.min(i + chunkSize, bytes.length));
+      binary += String.fromCharCode.apply(null, chunk);
+    }
+    
+    const base64 = btoa(binary);
+    debugLog(`Base64 conversion successful: ${base64.length} chars`);
+    return base64;
+    
+  } catch (arrayBufferError) {
+    debugWarn('arrayBuffer method failed, trying FileReader', { error: arrayBufferError.message });
+  }
+  
+  // Method 2: Fall back to FileReader
   return new Promise((resolve, reject) => {
     const reader = new FileReader();
-    reader.onloadend = () => {
-      // Remove data URL prefix
-      const base64 = reader.result.split(',')[1];
-      resolve(base64);
+    
+    reader.onload = () => {
+      try {
+        if (!reader.result) {
+          debugError('FileReader returned null result');
+          reject(new Error('FileReader returned null'));
+          return;
+        }
+        
+        // Remove data URL prefix (e.g., "data:image/jpeg;base64,")
+        const dataUrl = reader.result;
+        const commaIndex = dataUrl.indexOf(',');
+        if (commaIndex === -1) {
+          debugError('Invalid data URL format', { result: dataUrl.substring(0, 50) });
+          reject(new Error('Invalid data URL format'));
+          return;
+        }
+        
+        const base64 = dataUrl.substring(commaIndex + 1);
+        debugLog(`FileReader base64 conversion successful: ${base64.length} chars`);
+        resolve(base64);
+        
+      } catch (parseError) {
+        debugError('Error parsing FileReader result', { error: parseError.message });
+        reject(parseError);
+      }
     };
-    reader.onerror = reject;
+    
+    reader.onerror = () => {
+      debugError('FileReader error', { error: reader.error });
+      reject(reader.error || new Error('FileReader failed'));
+    };
+    
+    reader.onabort = () => {
+      debugError('FileReader aborted');
+      reject(new Error('FileReader aborted'));
+    };
+    
     reader.readAsDataURL(blob);
   });
 }
@@ -507,14 +605,23 @@ async function uploadWithRetry(capture, maxRetries = 5) {
       return result;
       
     } catch (error) {
-      lastError = error;
+      lastError = error || new Error('Unknown error');
+      const errorMessage = error?.message || String(error) || 'Unknown error';
+      
       debugError(`Upload attempt ${attempt}/${maxRetries} failed for #${capture.sequenceNum}`, {
-        error: error.message,
-        stack: error.stack
+        error: errorMessage,
+        stack: error?.stack,
+        errorType: error?.constructor?.name
       });
       
-      // Check for rate limit
-      if (error.message.includes('rate limit') || error.message.includes('403')) {
+      // Check for rate limit (with safe string check)
+      const isRateLimited = errorMessage.includes && (
+        errorMessage.includes('rate limit') || 
+        errorMessage.includes('403') ||
+        errorMessage.includes('secondary rate limit')
+      );
+      
+      if (isRateLimited) {
         debugWarn('Rate limited, waiting 60 seconds...');
         reportProgress('Rate limited. Waiting...');
         await delay(60000); // Wait 1 minute
@@ -528,9 +635,9 @@ async function uploadWithRetry(capture, maxRetries = 5) {
   }
   
   debugError(`All ${maxRetries} attempts failed for #${capture.sequenceNum}`, {
-    lastError: lastError?.message
+    lastError: lastError?.message || String(lastError)
   });
-  throw lastError;
+  throw lastError || new Error('Upload failed after all retries');
 }
 
 /**

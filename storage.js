@@ -285,10 +285,39 @@ async function deleteAllSessions() {
 async function saveCapture(capture) {
   return new Promise((resolve, reject) => {
     const transaction = db.transaction(['captures', 'sessions'], 'readwrite');
+    let captureId = null;
+    let sessionUpdated = false;
+    
+    // Handle transaction completion
+    transaction.oncomplete = () => {
+      if (captureId !== null) {
+        resolve(captureId);
+      } else {
+        reject(new Error('Capture was not saved'));
+      }
+    };
+    
+    transaction.onerror = () => {
+      console.error('Transaction error:', transaction.error);
+      reject(transaction.error);
+    };
+    
+    transaction.onabort = () => {
+      console.error('Transaction aborted:', transaction.error);
+      reject(transaction.error || new Error('Transaction aborted'));
+    };
     
     // Save capture (blob is stored in IndexedDB)
     const capturesStore = transaction.objectStore('captures');
     const captureRequest = capturesStore.add(capture);
+    
+    captureRequest.onsuccess = () => {
+      captureId = captureRequest.result;
+    };
+    
+    captureRequest.onerror = () => {
+      console.error('Failed to save capture:', captureRequest.error);
+    };
     
     // Update session stats
     const sessionsStore = transaction.objectStore('sessions');
@@ -297,17 +326,27 @@ async function saveCapture(capture) {
     sessionRequest.onsuccess = () => {
       const session = sessionRequest.result;
       if (session) {
-        session.captureCount++;
-        session.totalBytes += capture.imageSizeBytes || 0;
+        session.captureCount = (session.captureCount || 0) + 1;
+        session.totalBytes = (session.totalBytes || 0) + (capture.imageSizeBytes || 0);
         session.avgImageSize = session.totalBytes / session.captureCount;
         session.lastCaptureTime = capture.timestamp;
         session.duration = Math.floor((Date.now() - session.startTime) / 1000);
-        sessionsStore.put(session);
+        
+        const updateRequest = sessionsStore.put(session);
+        updateRequest.onsuccess = () => {
+          sessionUpdated = true;
+        };
+        updateRequest.onerror = () => {
+          console.error('Failed to update session stats:', updateRequest.error);
+        };
+      } else {
+        console.warn('Session not found for capture:', capture.sessionId);
       }
     };
     
-    captureRequest.onsuccess = () => resolve(captureRequest.result);
-    captureRequest.onerror = () => reject(captureRequest.error);
+    sessionRequest.onerror = () => {
+      console.error('Failed to get session:', sessionRequest.error);
+    };
   });
 }
 
